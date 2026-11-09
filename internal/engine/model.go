@@ -20,6 +20,13 @@ const (
 // Terminal reports whether a run status is final.
 func Terminal(s string) bool { return s == StDone || s == StFailed || s == StCancelled }
 
+// QueuedSystem is a system instruction waiting for the run's current step to end.
+type QueuedSystem struct {
+	Text  string         `json:"text"`
+	State string         `json:"state,omitempty"`
+	Vars  map[string]any `json:"vars,omitempty"`
+}
+
 // Run is one workflow instance. It is saved whole to memento on every change.
 type Run struct {
 	ID          string         `json:"id"`
@@ -32,6 +39,8 @@ type Run struct {
 	State       string         `json:"state"`
 	Status      string         `json:"status"`
 	Vars        map[string]any `json:"vars"`
+	// SystemQueue holds instructions sent while the run was busy; they apply when its step ends.
+	SystemQueue []QueuedSystem `json:"system_queue,omitempty"`
 	Visits      map[string]int `json:"visits"`
 	// Sessions remembers each agent state's last provider session
 	// ("provider:id"), so a resume = "session" step continues it on re-entry.

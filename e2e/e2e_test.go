@@ -1083,6 +1083,32 @@ func TestSystemInstruction(t *testing.T) {
 	expect(t, "gated report", e.waitStatus(id, "done", short).Report, "shipped")
 }
 
+func TestSystemQueuedWhileBusy(t *testing.T) {
+	e := newEnv(t)
+
+	// vars sent mid-step apply when it ends, over the step's own, and the edge is unchanged
+	id := e.start_("system-busy")
+	e.waitRun(id, short, "the script", func(v runView) bool { return hasEvent(v, "state.entered") })
+	e.must("system", id, "use this", "--vars", `{"note": "queued"}`)
+	v := e.waitStatus(id, "done", short)
+	expect(t, "queued vars report", v.Report, "next queued")
+	if !hasEvent(v, "system.queued") || !hasEvent(v, "system.instruction") {
+		t.Fatalf("not logged; events: %s", eventTypes(v))
+	}
+
+	// a queued state overrides where the step would go
+	id = e.start_("system-busy")
+	e.waitRun(id, short, "the script", func(v runView) bool { return hasEvent(v, "state.entered") })
+	e.must("system", id, "go there", "--state", "other", "--vars", `{"note": "moved"}`)
+	expect(t, "queued state report", e.waitStatus(id, "done", short).Report, "other moved")
+
+	// what would refuse it later refuses it now
+	id = e.start_("system-busy")
+	e.waitRun(id, short, "the script", func(v runView) bool { return hasEvent(v, "state.entered") })
+	e.refused(4, "no state", "system", id, "nope", "--state", "missing")
+	e.waitStatus(id, "done", short)
+}
+
 func TestWorkerCannotSendSystem(t *testing.T) {
 	e := newEnv(t)
 	id := e.start_("system-wait")

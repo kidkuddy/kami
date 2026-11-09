@@ -473,7 +473,7 @@ func (e *Engine) outcome(r *Run, out string, vars map[string]any) {
 			e.event(r, "run.say", map[string]any{"state": r.State, "outcome": out, "text": text})
 		}
 	}
-	e.enter(r, next)
+	e.enter(r, e.applySystemQueue(r, next))
 }
 
 // finish ends a run, closes its contracts, and tells its parent.
@@ -487,6 +487,10 @@ func (e *Engine) finish(r *Run, status, report string) {
 		p.kill()
 	}
 	e.cancelContracts(r, "run finished", "")
+	for _, q := range r.SystemQueue { // the step never reached an outcome: say so, nothing is silently dropped
+		e.event(r, "system.dropped", map[string]any{"text": q.Text, "state": q.State, "vars": q.Vars, "status": status})
+	}
+	r.SystemQueue = nil
 	r.Status, r.Report, r.Outcome = status, report, r.State
 	if r.Step != nil {
 		r.Step.Phase, r.Step.Token = "done", ""
@@ -527,12 +531,17 @@ func (e *Engine) Upgrade(id, state string, vars map[string]any) (*Run, error) {
 	return r, e.upgrade(r, state, vars)
 }
 
+// busy reports a run with a process or children still running.
+func (e *Engine) busy(r *Run) bool {
+	return e.procs[r.ID] != nil || (r.Step != nil && (r.Step.probing || r.Step.Kind == kamui.KSpawn ||
+		(r.Step.Kind == kamui.KAgent && r.Step.Phase != "done")))
+}
+
 func (e *Engine) upgrade(r *Run, state string, vars map[string]any) error {
 	if Terminal(r.Status) {
 		return uerr("CONFLICT", "run %s is already %s", r.ID, r.Status)
 	}
-	if e.procs[r.ID] != nil || (r.Step != nil && (r.Step.probing || r.Step.Kind == kamui.KSpawn ||
-		(r.Step.Kind == kamui.KAgent && r.Step.Phase != "done"))) {
+	if e.busy(r) {
 		return uerr("CONFLICT", "run %s is busy in %s: upgrade it while it waits", r.ID, r.State)
 	}
 	_, w, err := LoadWorkflow(e.Home, r.Kekkai, r.Workflow)
