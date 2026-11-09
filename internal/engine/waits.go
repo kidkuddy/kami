@@ -127,6 +127,14 @@ func (e *Engine) probeExited(id, tok string, res procResult) {
 				e.event(r, "run.say", map[string]any{"state": r.State, "outcome": out, "text": strings.TrimSpace(say)})
 			}
 		}
+		if len(r.SystemQueue) > 0 { // sent during this probe: the wait may be hours, so it applies now
+			if next := e.applySystemQueue(r, r.State); next != r.State {
+				e.stopTimer("run:" + r.ID)
+				e.enter(r, next)
+				return
+			}
+			e.saveRun(r, "system instruction applied")
+		}
 		t := now().Add(every)
 		r.Step.probeAt = &t
 		e.scheduleRun(r) // no memento write: waiting costs nothing
