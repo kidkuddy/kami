@@ -796,19 +796,36 @@ func (e *Engine) stopTimer(key string) {
 
 // Close stops timers and kills running processes. Runs stay as they are in
 // memento and resume on the next boot.
+//
+// The lock is released before killing processes: killing a proc makes its
+// onExit goroutine run, and onExit takes e.mu again. Holding the lock across
+// the kill loop would block those callbacks on Close's lock, so Close grabs
+// the procs under the lock, releases it, then kills and waits for them.
 func (e *Engine) Close() {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	e.closed = true
 	for k, t := range e.timers {
 		t.Stop()
 		delete(e.timers, k)
 	}
+	// Snapshot the procs under the lock, then kill them outside it so the
+	// onExit callbacks (which take e.mu again) are never blocked on Close's lock.
+	procs := make([]*proc, 0, len(e.procs)+len(e.resolvers))
 	for _, p := range e.procs {
-		p.kill()
+		procs = append(procs, p)
 	}
 	for _, p := range e.resolvers {
+		procs = append(procs, p)
+	}
+	e.mu.Unlock()
+
+	for _, p := range procs {
 		p.kill()
+	}
+	// Wait for each onExit goroutine to finish so Close does not return while a
+	// callback is mid-flight and could deadlock on e.mu after we release it.
+	for _, p := range procs {
+		<-p.done
 	}
 }
 

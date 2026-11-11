@@ -36,6 +36,14 @@ kami status
 Needs `memento` on PATH with an initialised store, and `claude` / `codex` for
 real workers.
 
+## Go toolchain
+
+Kami is pinned to Go 1.27.1 via `go.mod` (`go 1.27.1` plus `toolchain go1.27.1`).
+Building requires `GOTOOLCHAIN=auto` (or Go 1.27.1+ installed directly), since
+older toolchains are refused with a clear message rather than a hard failure.
+Note that `make` has no `GOTOOLCHAIN` handling: export `GOTOOLCHAIN=auto` before
+running `make build`/`make test` if your installed Go is older than 1.27.1.
+
 ## A first workflow
 
 ```
