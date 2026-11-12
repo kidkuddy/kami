@@ -40,6 +40,7 @@ type Engine struct {
 	resolvers map[string]*proc // contract id -> running resolver
 	triggers  map[string]time.Time
 	pauses    map[string]*Pause // kekkai -> its pause
+	offline   *time.Time        // since when the network is gone (offline.go); nil online
 	closed    bool
 }
 

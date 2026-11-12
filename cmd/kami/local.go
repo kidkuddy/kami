@@ -95,6 +95,7 @@ func serve() error {
 		ln.Close()
 		return fail("INTERNAL", "boot: %v", err)
 	}
+	eng.WatchNetwork()
 	srv := &http.Server{Handler: eng.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)

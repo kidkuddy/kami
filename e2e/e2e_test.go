@@ -100,7 +100,7 @@ func newEnv(t *testing.T, kekkais ...string) *env {
 		}
 		e.vars = append(e.vars, kv)
 	}
-	e.vars = append(e.vars, "KAMI_HOME="+e.home, "DAEMON_SECRET=d1")
+	e.vars = append(e.vars, "KAMI_HOME="+e.home, "DAEMON_SECRET=d1", "KAMI_NET_PROBE=off") // TestOffline turns it on
 	e.log, _ = os.OpenFile(filepath.Join(root, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	e.start()
 	return e
@@ -1021,6 +1021,51 @@ func TestPause(t *testing.T) {
 	time.Sleep(800 * time.Millisecond)
 	expect(t, "timer still has its 1.5s left", e.show(id).Status, "waiting")
 	e.waitStatus(id, "done", short)
+}
+
+// --- offline: no network holds every kekkai like a pause, and grace does not run out ------
+
+func TestOffline(t *testing.T) {
+	e := newEnv(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0") // the "network": up while it accepts
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	e.vars = append(e.vars, "KAMI_NET_PROBE="+addr, "KAMI_NET_EVERY=100ms")
+	e.crash()
+	e.start()
+
+	grace := e.start_("afk-grace-5s") // opened while online
+	e.openContract(grace, short)
+	opened := time.Now()
+	timer := e.start_("timer-4s")
+	ln.Close() // offline after 3 misses
+	for deadline := time.Now().Add(short); ; time.Sleep(100 * time.Millisecond) {
+		cmd := exec.Command(kamiBin, "--json", "events", "tail", "--type", "kami.offline")
+		cmd.Env = e.vars
+		if out, _ := cmd.Output(); bytes.Contains(out, []byte("kami.offline")) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("never went offline")
+		}
+	}
+	parked := e.start_("script-step", "--input", "word=hi")
+	e.waitRun(parked, short, "parked while offline", func(v runView) bool { return hasEvent(v, "run.paused") })
+	time.Sleep(time.Until(opened.Add(6 * time.Second))) // past the grace window and the timer
+	expect(t, "grace held offline", e.show(grace).Status, "waiting")
+	expect(t, "timer held offline", e.show(timer).Status, "waiting")
+	expect(t, "new run held offline", e.show(parked).Status, "waiting")
+
+	if ln, err = net.Listen("tcp", addr); err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	e.waitStatus(parked, "done", short)
+	expect(t, "timer keeps the time it had left", e.show(timer).Status, "waiting")
+	e.waitStatus(timer, "done", short)
+	expect(t, "grace resolved after it", e.waitStatus(grace, "done", short).Contracts[0].Resolution.By, "resolver")
 }
 
 // --- system instructions and SSE -------------------------------------------------------

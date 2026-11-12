@@ -41,7 +41,11 @@ func (e *Engine) savePauses() error {
 	return os.WriteFile(e.pausesFile(), raw, 0o600)
 }
 
+// held: r's kekkai is paused (and r's workflow is not excepted), or the daemon is offline.
 func (e *Engine) held(r *Run) bool {
+	if e.offline != nil {
+		return true
+	}
 	p := e.pauses[r.Kekkai]
 	return p != nil && !slices.Contains(p.Except, r.Workflow)
 }
@@ -86,35 +90,53 @@ func (e *Engine) resume(k string) []string {
 	delete(e.pauses, k)
 	e.stopTimer("pause:" + k)
 	e.savePauses()
-	var ids []string
-	for id, r := range e.runs {
-		if r.Kekkai == k && !Terminal(r.Status) {
-			ids = append(ids, id)
-		}
-	}
-	slices.Sort(ids)
 	var resumed []string
-	for _, id := range ids {
+	for _, id := range e.activeIDs() {
 		r := e.runs[id]
-		switch {
-		case slices.Contains(p.Except, r.Workflow): // it kept going: nothing to make up
-		case r.Step != nil && r.Step.Kind == "paused":
+		if r.Kekkai != k || slices.Contains(p.Except, r.Workflow) { // an excepted one kept going: nothing to make up
+			continue
+		}
+		if e.offline != nil { // still offline: going online releases it, with the whole hold made up
+			continue
+		}
+		if e.release(r, paused) {
 			resumed = append(resumed, id)
-			e.enter(r, r.State)
-		case r.Step != nil && r.Step.Kind == kamui.KWait && r.Step.Phase == "waiting" && !r.Step.probing:
-			// the pause did not count: its timeout and timer move on by its length
-			for _, t := range []*time.Time{r.Step.Deadline, r.Step.WakeAt} {
-				if t != nil {
-					*t = t.Add(paused)
-				}
-			}
-			r.Step.probeAt = nil // probe again now, not at the time the pause pushed it to
-			e.saveRun(r, "resumed")
-			e.scheduleRun(r)
 		}
 	}
 	e.event(nil, "kekkai.resumed", map[string]any{"kekkai": k, "runs": resumed})
 	return resumed
+}
+
+// activeIDs lists the runs not yet finished, sorted.
+func (e *Engine) activeIDs() []string {
+	var ids []string
+	for id, r := range e.runs {
+		if !Terminal(r.Status) {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	return ids
+}
+
+// release lets r go after a hold of length d (a pause, or offline): a parked run enters its
+// state; a waiting wait's timeout and timer move on by d, and it probes now. True when it was parked.
+func (e *Engine) release(r *Run, d time.Duration) bool {
+	switch {
+	case r.Step != nil && r.Step.Kind == "paused":
+		e.enter(r, r.State)
+		return true
+	case r.Step != nil && r.Step.Kind == kamui.KWait && r.Step.Phase == "waiting" && !r.Step.probing:
+		for _, t := range []*time.Time{r.Step.Deadline, r.Step.WakeAt} {
+			if t != nil {
+				*t = t.Add(d)
+			}
+		}
+		r.Step.probeAt = nil // probe again now, not at the time the hold pushed it to
+		e.saveRun(r, "resumed")
+		e.scheduleRun(r)
+	}
+	return false
 }
 
 // park holds r at state name until its kekkai resumes; enter runs it then.
@@ -127,7 +149,7 @@ func (e *Engine) park(r *Run, name string) {
 // probeHeld pushes a held wait's next check to the end of the pause (or a minute out).
 func (e *Engine) probeHeld(r *Run) {
 	t := now().Add(time.Minute)
-	if p := e.pauses[r.Kekkai]; p != nil && p.Until != nil {
+	if p := e.pauses[r.Kekkai]; p != nil && p.Until != nil && e.offline == nil {
 		t = *p.Until
 	}
 	r.Step.probeAt = &t

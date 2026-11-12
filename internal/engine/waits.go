@@ -319,8 +319,12 @@ func (e *Engine) scheduleTriggersLocked() map[string]string {
 // daemon was down, or while the kekkai is paused, are skipped, not caught up.
 func (e *Engine) armTrigger(id, k, wf string, tr kamui.Trigger, next time.Time) {
 	e.setTimer("trigger:"+id, next, func() {
-		if p := e.pauses[k]; p != nil && !slices.Contains(p.Except, wf) {
-			e.Bus.Append(k, "", "trigger.skipped", map[string]any{"trigger": id, "cron": tr.Cron, "why": "kekkai paused"})
+		if p := e.pauses[k]; e.offline != nil || p != nil && !slices.Contains(p.Except, wf) {
+			why := "kekkai paused"
+			if e.offline != nil {
+				why = "offline"
+			}
+			e.Bus.Append(k, "", "trigger.skipped", map[string]any{"trigger": id, "cron": tr.Cron, "why": why})
 			if n := tr.Sched.Next(time.Now()); !n.IsZero() {
 				e.armTrigger(id, k, wf, tr, n)
 			}
