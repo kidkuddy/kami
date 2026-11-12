@@ -42,8 +42,14 @@ func (e *Engine) scheduleRun(r *Run) {
 		t := now()
 		st.probeAt = &t // first probe right away, and right away after a restart
 	}
+	due := []*time.Time{st.WakeAt, st.Deadline, st.probeAt}
+	if e.held(r) {
+		// a held wait's timer and timeout cannot fire (release moves them on by the hold);
+		// arming one that passed during the hold would refire at once, forever
+		due = []*time.Time{st.probeAt}
+	}
 	var next *time.Time
-	for _, t := range []*time.Time{st.WakeAt, st.Deadline, st.probeAt} {
+	for _, t := range due {
 		if t != nil && (next == nil || t.Before(*next)) {
 			next = t
 		}

@@ -148,6 +148,25 @@ func (e *env) start() {
 }
 
 // crash kills the daemon with SIGKILL: no cleanup, like a power cut.
+// cpu is the daemon's CPU time so far, from ps ([dd-]hh:mm:ss or m:ss.ss).
+func (e *env) cpu() time.Duration {
+	e.t.Helper()
+	out, err := exec.Command("ps", "-o", "time=", "-p", strconv.Itoa(e.daemon.Process.Pid)).Output()
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	s := strings.TrimSpace(string(out))
+	if _, rest, ok := strings.Cut(s, "-"); ok {
+		s = rest // days do not happen in a test
+	}
+	var secs float64
+	for _, f := range strings.Split(s, ":") {
+		n, _ := strconv.ParseFloat(f, 64)
+		secs = secs*60 + n
+	}
+	return time.Duration(secs * float64(time.Second))
+}
+
 func (e *env) crash() {
 	if e.daemon != nil {
 		e.daemon.Process.Kill()
@@ -1017,6 +1036,11 @@ func TestPause(t *testing.T) {
 	e.must("kekkai", "pause", "test")
 	time.Sleep(3 * time.Second) // past the 2s timer
 	expect(t, "timer held", e.show(id).Status, "waiting")
+	before := e.cpu() // a passed timer on a held run must not refire in a loop
+	time.Sleep(2 * time.Second)
+	if used := e.cpu() - before; used > time.Second {
+		t.Fatalf("daemon used %v CPU in 2s holding a passed timer", used)
+	}
 	e.must("kekkai", "resume", "test")
 	time.Sleep(800 * time.Millisecond)
 	expect(t, "timer still has its 1.5s left", e.show(id).Status, "waiting")
