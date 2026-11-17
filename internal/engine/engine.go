@@ -67,6 +67,24 @@ func New(home string, mem *state.Memento, bus *eventbus.Bus, kamiBin, sock strin
 
 func now() time.Time { return time.Now().UTC() }
 
+// fixThread migrates a run saved before Thread was fixed, once: a Thread it already has stays, a
+// child takes its parent's (its own vars are worker-writable), a top-level run its thread_ts var.
+func (e *Engine) fixThread(r *Run, depth int) {
+	if r.ThreadSet || depth > 32 { // ponytail: the depth cap guards a parent cycle
+		return
+	}
+	if r.Thread == "" {
+		if p := e.runs[r.Parent]; r.Parent != "" && p != nil {
+			e.fixThread(p, depth+1)
+			r.Thread = p.Thread
+		} else if r.Parent == "" {
+			r.Thread, _ = r.Vars["thread_ts"].(string)
+		}
+	}
+	r.ThreadSet = true
+	e.saveRun(r, "thread fixed")
+}
+
 // event appends to the log; a log failure never stops the engine.
 func (e *Engine) event(r *Run, typ string, data map[string]any) {
 	kek, id := "", ""
@@ -132,11 +150,7 @@ func (e *Engine) Boot() error {
 		e.runs[r.ID] = r
 	}
 	for _, r := range e.runs {
-		if !r.ThreadSet { // ponytail: a run from before Thread existed takes its thread_ts once, then it is fixed
-			r.Thread, _ = r.Vars["thread_ts"].(string)
-			r.ThreadSet = true
-			e.saveRun(r, "thread fixed")
-		}
+		e.fixThread(r, 0)
 	}
 	cDocs, err := e.Mem.Docs("contracts", "")
 	if err != nil {
