@@ -1024,17 +1024,17 @@ func TestPause(t *testing.T) {
 	id = e.start_("probe-wait")
 	expect(t, "report after --until", e.waitStatus(id, "done", short).Report, "3")
 
-	id = e.start_("probe-wait") // already waiting when the pause starts: its probes stop
+	id = e.start_("probe-wait-slow") // already waiting when the pause starts: its probes stop
 	e.must("kekkai", "pause", "test")
 	time.Sleep(3 * time.Second)
 	expect(t, "status with probes held", e.show(id).Status, "waiting")
 	e.must("kekkai", "resume", "test")
 	expect(t, "report after resume", e.waitStatus(id, "done", short).Report, "3")
 	// a wait's timer does not run out while paused: the pause's length is added back
-	id = e.start_("timer")
+	id = e.start_("timer-4s") // 4s: under -race the CLI calls alone can eat a 2s timer's margin
 	time.Sleep(500 * time.Millisecond)
 	e.must("kekkai", "pause", "test")
-	time.Sleep(3 * time.Second) // past the 2s timer
+	time.Sleep(5 * time.Second) // past the 4s timer
 	expect(t, "timer held", e.show(id).Status, "waiting")
 	before := e.cpu() // a passed timer on a held run must not refire in a loop
 	time.Sleep(2 * time.Second)
@@ -1043,8 +1043,33 @@ func TestPause(t *testing.T) {
 	}
 	e.must("kekkai", "resume", "test")
 	time.Sleep(800 * time.Millisecond)
-	expect(t, "timer still has its 1.5s left", e.show(id).Status, "waiting")
+	expect(t, "timer still has its 3.5s left", e.show(id).Status, "waiting")
 	e.waitStatus(id, "done", short)
+}
+
+// --- allow: one thread through a pause; a worker cannot claim its way out ------------------
+
+func TestPauseAllow(t *testing.T) {
+	e := newEnv(t)
+	e.must("kekkai", "pause", "test")
+	e.must("kekkai", "allow", "test", "T1")
+	ok := e.start_("threaded", "--input", "thread_ts=T1", "--input", "claim=T1")
+	expect(t, "allowed thread runs", e.waitStatus(ok, "done", short).Report, "ran")
+	held := e.start_("threaded", "--input", "thread_ts=T2", "--input", "claim=T2")
+	e.waitRun(held, short, "parked", func(v runView) bool { return hasEvent(v, "run.paused") })
+
+	e.must("kekkai", "resume", "test")
+	e.waitStatus(held, "done", short)
+	// T2 rewrites vars.thread_ts to the allowed T1, then the pause comes: it stays held
+	esc := e.start_("threaded", "--input", "thread_ts=T2", "--input", "claim=T1")
+	e.waitRun(esc, short, "napping", func(v runView) bool { return v.State == "nap" })
+	napped := time.Now()
+	e.must("kekkai", "pause", "test")
+	e.must("kekkai", "allow", "test", "T1")
+	time.Sleep(time.Until(napped.Add(7 * time.Second))) // past the 6s nap
+	expect(t, "a claimed thread_ts does not get through", e.show(esc).Status, "waiting")
+	e.must("kekkai", "resume", "test")
+	e.waitStatus(esc, "done", short)
 }
 
 // --- offline: no network holds every kekkai like a pause, and grace does not run out ------

@@ -57,9 +57,8 @@ func (e *Engine) held(r *Run) bool {
 // allowed: r or an ancestor matches one of p.Allow (thread ts or run id prefix).
 func (e *Engine) allowed(p *Pause, r *Run) bool {
 	for i := 0; r != nil && i < 32 && len(p.Allow) > 0; i++ { // ponytail: depth cap guards a parent cycle
-		ts, _ := r.Vars["thread_ts"].(string)
 		for _, a := range p.Allow {
-			if a == ts || strings.HasPrefix(r.ID, a) {
+			if (r.Thread != "" && a == r.Thread) || strings.HasPrefix(r.ID, a) {
 				return true
 			}
 		}
