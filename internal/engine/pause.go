@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 
 	"kami/internal/kamui"
@@ -17,7 +18,10 @@ import (
 type Pause struct {
 	Until  *time.Time `json:"until,omitempty"`
 	Except []string   `json:"except,omitempty"`
-	Since  time.Time  `json:"since"`
+	// Allow lets single threads through: a Slack thread ts (vars.thread_ts) or a run id prefix.
+	// A run goes when it or any ancestor matches, so a chat frees its goals and their tickets.
+	Allow []string  `json:"allow,omitempty"`
+	Since time.Time `json:"since"`
 }
 
 // ponytail: one JSON file; pauses are rare and tiny.
@@ -47,7 +51,56 @@ func (e *Engine) held(r *Run) bool {
 		return true
 	}
 	p := e.pauses[r.Kekkai]
-	return p != nil && !slices.Contains(p.Except, r.Workflow)
+	return p != nil && !slices.Contains(p.Except, r.Workflow) && !e.allowed(p, r)
+}
+
+// allowed: r or an ancestor matches one of p.Allow (thread ts or run id prefix).
+func (e *Engine) allowed(p *Pause, r *Run) bool {
+	for i := 0; r != nil && i < 32 && len(p.Allow) > 0; i++ { // ponytail: depth cap guards a parent cycle
+		ts, _ := r.Vars["thread_ts"].(string)
+		for _, a := range p.Allow {
+			if a == ts || strings.HasPrefix(r.ID, a) {
+				return true
+			}
+		}
+		r = e.runs[r.Parent]
+	}
+	return false
+}
+
+// AllowThread lets thread/run a (and everything under it) through k's pause, releasing what is
+// parked; on=false takes it back, and those runs park again at their next state.
+func (e *Engine) AllowThread(k, a string, on bool) (*Pause, []string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	p := e.pauses[k]
+	if p == nil {
+		return nil, nil, uerr("CONFLICT", "kekkai %s is not paused", k)
+	}
+	if a == "" {
+		return nil, nil, uerr("USAGE", "a thread ts or run id is needed")
+	}
+	p.Allow = slices.DeleteFunc(p.Allow, func(x string) bool { return x == a })
+	if on {
+		p.Allow = append(p.Allow, a)
+	}
+	if err := e.savePauses(); err != nil {
+		return nil, nil, err
+	}
+	var released []string
+	if on && e.offline == nil {
+		paused := now().Sub(p.Since)
+		only := &Pause{Allow: []string{a}} // just a's runs: ones already let through by another entry were released then
+		for _, id := range e.activeIDs() {
+			r := e.runs[id]
+			if r.Kekkai == k && e.allowed(only, r) && !slices.Contains(p.Except, r.Workflow) {
+				e.release(r, paused)
+				released = append(released, id)
+			}
+		}
+	}
+	e.event(nil, "kekkai.allow", map[string]any{"kekkai": k, "allow": a, "on": on, "runs": released})
+	return p, released, nil
 }
 
 func (e *Engine) armResume(k string, p *Pause) {
@@ -93,7 +146,7 @@ func (e *Engine) resume(k string) []string {
 	var resumed []string
 	for _, id := range e.activeIDs() {
 		r := e.runs[id]
-		if r.Kekkai != k || slices.Contains(p.Except, r.Workflow) { // an excepted one kept going: nothing to make up
+		if r.Kekkai != k || slices.Contains(p.Except, r.Workflow) || e.allowed(p, r) { // an excepted or allowed one kept going: nothing to make up
 			continue
 		}
 		if e.offline != nil { // still offline: going online releases it, with the whole hold made up
