@@ -154,12 +154,18 @@ func (e *Engine) applyMode(c *Contract, fresh bool) {
 			e.saveContract(c, "grace "+m.Grace.String())
 		}
 		id := c.ID
-		e.setTimer("contract:"+id, *c.Deadline, func() {
+		var expire func()
+		expire = func() {
+			if e.offline != nil { // the owner cannot see it either: going online moves the deadline on
+				e.setTimer("contract:"+id, now().Add(time.Minute), expire)
+				return
+			}
 			if c := e.contracts[id]; c != nil && c.Status == "open" {
 				e.event(e.runs[c.RunID], "contract.grace_expired", map[string]any{"id": id})
 				e.runResolver(c)
 			}
-		})
+		}
+		e.setTimer("contract:"+id, *c.Deadline, expire)
 	}
 	e.event(e.runs[c.RunID], "contract.mode", map[string]any{"id": c.ID, "mode": m.String(), "source": src})
 }

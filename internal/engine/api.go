@@ -274,6 +274,22 @@ func (e *Engine) Handler() http.Handler {
 		p, err := e.PauseKekkai(r.PathValue("k"), req.Until, req.Except)
 		reply(w, p, err)
 	})
+	m.HandleFunc("POST /kekkai/{k}/allow", func(w http.ResponseWriter, r *http.Request) {
+		if err := workerOnly(r); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		var req struct {
+			Thread string
+			On     bool
+		}
+		if err := decode(r, &req); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		p, ids, err := e.AllowThread(r.PathValue("k"), req.Thread, req.On)
+		reply(w, map[string]any{"pause": p, "released": ids}, err)
+	})
 	m.HandleFunc("POST /kekkai/{k}/resume", func(w http.ResponseWriter, r *http.Request) {
 		if err := workerOnly(r); err != nil {
 			reply(w, nil, err)

@@ -10,7 +10,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -34,6 +36,25 @@ func (p *proc) kill() {
 	}
 }
 
+// sweepMarked kills every process whose environment holds marker (KAMI_PROC=<token>).
+// ponytail: one `ps -E` scan per worker exit; macOS/BSD ps prints the environment after the command.
+func sweepMarked(marker string) {
+	out, err := exec.Command("ps", "-axEww", "-o", "pid=,command=").Output()
+	if err != nil {
+		return
+	}
+	self := os.Getpid()
+	for _, l := range strings.Split(string(out), "\n") {
+		f := strings.Fields(l)
+		if len(f) < 2 || !slices.Contains(f[1:], marker) {
+			continue
+		}
+		if pid, err := strconv.Atoi(f[0]); err == nil && pid != self {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+}
+
 type procResult struct {
 	Exit     int
 	TimedOut bool
@@ -49,12 +70,21 @@ type procSpec struct {
 	Stdin   []byte
 	Timeout time.Duration
 	LogDir  string // stdout/stderr are kept here when set
+	// Sweep kills, when the process ends, every process still carrying its KAMI_PROC marker:
+	// what a worker started detached (nohup, a backgrounded shell) left its process group and
+	// outlives it otherwise, still hitting dev with nobody reading its results.
+	Sweep bool
 }
 
 // startProc launches spec; onExit runs in its own goroutine when it ends.
 func startProc(spec procSpec, tok string, onExit func(procResult)) (*proc, error) {
 	cmd := exec.Command(spec.Args[0], spec.Args[1:]...)
 	cmd.Dir, cmd.Env = spec.Dir, spec.Env
+	marker := ""
+	if spec.Sweep {
+		marker = "KAMI_PROC=" + token()
+		cmd.Env = append(cmd.Env, marker)
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if spec.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(spec.Stdin)
@@ -87,6 +117,9 @@ func startProc(spec procSpec, tok string, onExit func(procResult)) (*proc, error
 		err := cmd.Wait()
 		if timer != nil {
 			timer.Stop()
+		}
+		if marker != "" {
+			sweepMarked(marker)
 		}
 		for _, f := range files {
 			f.Close()
@@ -359,7 +392,7 @@ func (e *Engine) startAgent(r *Run, wk *wake) {
 	r.Step.Pending = nil
 	r.Status = StRunning
 	runID := r.ID
-	p, err := startProc(procSpec{Args: args, Dir: cwd, Env: env, Timeout: timeout, LogDir: dir}, tok, func(res procResult) {
+	p, err := startProc(procSpec{Args: args, Dir: cwd, Env: env, Timeout: timeout, LogDir: dir, Sweep: true}, tok, func(res procResult) {
 		e.agentExited(runID, tok, res)
 	})
 	if err != nil {

@@ -95,6 +95,7 @@ func serve() error {
 		ln.Close()
 		return fail("INTERNAL", "boot: %v", err)
 	}
+	eng.WatchNetwork()
 	srv := &http.Server{Handler: eng.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
@@ -327,6 +328,21 @@ func cmdKekkai(sub string, args []string) error {
 			}
 			fmt.Println()
 		})
+	case "allow", "hold":
+		if len(args) != 2 {
+			return fail("USAGE", "usage: kami kekkai allow|hold <name> <thread_ts|run id>")
+		}
+		var out struct {
+			Pause    struct{ Allow []string }
+			Released []string
+		}
+		data, err := call("POST", "/kekkai/"+url.PathEscape(args[0])+"/allow", map[string]any{"thread": args[1], "on": sub == "allow"}, &out)
+		if err != nil {
+			return err
+		}
+		return emit(data, func() {
+			fmt.Printf("%s %s %s: %d runs released; allowed now: %s\n", args[0], sub, args[1], len(out.Released), strings.Join(out.Pause.Allow, ", "))
+		})
 	case "resume":
 		if len(args) != 1 {
 			return fail("USAGE", "usage: kami kekkai resume <name>")
@@ -338,7 +354,7 @@ func cmdKekkai(sub string, args []string) error {
 		}
 		return emit(data, func() { fmt.Printf("resumed %s: %d held runs continue\n", args[0], len(out.Resumed)) })
 	}
-	return fail("USAGE", "usage: kami kekkai list|current|switch|validate|reload|pause|resume")
+	return fail("USAGE", "usage: kami kekkai list|current|switch|validate|reload|pause|resume|allow|hold")
 }
 
 // silentErr exits with a code after output was already printed.

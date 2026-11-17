@@ -100,7 +100,7 @@ const usage = `kami — the Kami agent OS
   kami status                              daemon, runs, open contracts
 
   kami kekkai list | current | switch <name> | validate [<name>] | reload
-  kami kekkai pause <name> [--until HH:MM|RFC3339] [--except wf,wf] | resume <name>
+  kami kekkai pause <name> [--until HH:MM|RFC3339] [--except wf,wf] | resume <name> | allow|hold <name> <thread_ts|run id>
   kami workflow list | validate <file|name> | dry-run <file|name>   [--kekkai K]
 
   kami run start <workflow>[:<entry>] [--kekkai K] [--input k=v]... [--inputs JSON] [--afk MODE]
