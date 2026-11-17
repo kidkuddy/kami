@@ -48,12 +48,14 @@ type Run struct {
 	AFK      *kamui.AFK        `json:"afk_override,omitempty"`
 	// Thread is the thread_ts input the run was created with. vars.thread_ts can be changed by a
 	// worker's outcome; this cannot, so a kekkai pause's Allow list matches on it.
-	Thread  string     `json:"thread,omitempty"`
-	Report  string     `json:"report,omitempty"`
-	Outcome string     `json:"outcome,omitempty"` // terminal state name
-	Step    *StepState `json:"step,omitempty"`
-	Created time.Time  `json:"created_at"`
-	Updated time.Time  `json:"updated_at"`
+	Thread string `json:"thread,omitempty"`
+	// ThreadSet: Thread was fixed at creation (or migrated once); a boot never re-derives it.
+	ThreadSet bool       `json:"thread_set,omitempty"`
+	Report    string     `json:"report,omitempty"`
+	Outcome   string     `json:"outcome,omitempty"` // terminal state name
+	Step      *StepState `json:"step,omitempty"`
+	Created   time.Time  `json:"created_at"`
+	Updated   time.Time  `json:"updated_at"`
 }
 
 // StepState is what the current state is doing.

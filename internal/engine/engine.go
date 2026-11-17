@@ -129,10 +129,14 @@ func (e *Engine) Boot() error {
 		if err := json.Unmarshal(raw, r); err != nil {
 			return fmt.Errorf("run doc: %w", err)
 		}
-		if r.Thread == "" { // ponytail: runs from before Thread existed take today's thread_ts, once
-			r.Thread, _ = r.Vars["thread_ts"].(string)
-		}
 		e.runs[r.ID] = r
+	}
+	for _, r := range e.runs {
+		if !r.ThreadSet { // ponytail: a run from before Thread existed takes its thread_ts once, then it is fixed
+			r.Thread, _ = r.Vars["thread_ts"].(string)
+			r.ThreadSet = true
+			e.saveRun(r, "thread fixed")
+		}
 	}
 	cDocs, err := e.Mem.Docs("contracts", "")
 	if err != nil {
@@ -323,7 +327,14 @@ func (e *Engine) createRun(k, wf, entry string, inputs map[string]any, afk *kamu
 	r := &Run{ID: NewID(), Workflow: wf, DefHash: w.Hash, Kekkai: k, Parent: parent, ParentIndex: idx,
 		Entry: entry, State: start, Status: StRunning, Vars: inputs, Visits: map[string]int{}, AFK: afk,
 		Created: now()}
-	r.Thread, _ = inputs["thread_ts"].(string)
+	// a child's inputs come from its parent's vars, which workers can change: it inherits the
+	// parent's thread; only a top-level run takes its thread_ts input
+	if p := e.runs[parent]; p != nil {
+		r.Thread = p.Thread
+	} else if parent == "" {
+		r.Thread, _ = inputs["thread_ts"].(string)
+	}
+	r.ThreadSet = true
 	e.runs[r.ID] = r
 	e.saveRun(r, "created")
 	e.event(r, "run.started", map[string]any{"workflow": wf, "entry": entry, "parent": parent, "def_hash": w.Hash})
