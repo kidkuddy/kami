@@ -551,12 +551,21 @@ func (e *Engine) cancelContracts(r *Run, why, keep string) {
 // started with, so a fix to a workflow otherwise only reaches new runs. Its open
 // contracts are withdrawn, except one the state asks again unchanged (openStateContract
 // keeps it). A run with a process or children still running is refused.
-func (e *Engine) Upgrade(id, state string, vars map[string]any) (*Run, error) {
+// reopen also takes a finished run back to state (named explicitly): a run closed by mistake
+// continues where it is told, with its vars, instead of a fresh run adopting its work.
+func (e *Engine) Upgrade(id, state string, vars map[string]any, reopen bool) (*Run, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	r, err := e.findRun(id)
 	if err != nil {
 		return nil, err
+	}
+	if reopen && Terminal(r.Status) {
+		if state == "" {
+			return r, uerr("INVALID", "reopen needs --state: run %s ended in %s", r.ID, r.State)
+		}
+		r.Status, r.Report, r.Outcome = StRunning, "", ""
+		e.event(r, "run.reopened", map[string]any{"state": state})
 	}
 	return r, e.upgrade(r, state, vars)
 }
@@ -569,7 +578,7 @@ func (e *Engine) busy(r *Run) bool {
 
 func (e *Engine) upgrade(r *Run, state string, vars map[string]any) error {
 	if Terminal(r.Status) {
-		return uerr("CONFLICT", "run %s is already %s", r.ID, r.Status)
+		return uerr("CONFLICT", "run %s is already %s (kami run reopen <id> --state S takes it back)", r.ID, r.Status)
 	}
 	if e.busy(r) {
 		return uerr("CONFLICT", "run %s is busy in %s: upgrade it while it waits", r.ID, r.State)
@@ -759,9 +768,34 @@ func (e *Engine) findRun(id string) (*Run, error) {
 		}
 	}
 	if match == nil {
-		return nil, uerr("NOT_FOUND", "no run %q", id)
+		return e.runByTicket(id)
 	}
 	return match, nil
+}
+
+// runByTicket: a ticket id (CAL-1587, any case) names the one run whose vars.ticket_id carries it.
+// Operators type ticket ids, and a mistyped run id once closed the wrong ticket. vars are written by
+// scripts and workers, so a ticket id that more than one run carries (a rerun, or a worker that set
+// it) is refused with every candidate listed: the operator picks the run id.
+func (e *Engine) runByTicket(id string) (*Run, error) {
+	var found []*Run
+	for _, r := range e.runs {
+		if t, _ := r.Vars["ticket_id"].(string); t != "" && strings.EqualFold(t, id) {
+			found = append(found, r)
+		}
+	}
+	switch len(found) {
+	case 0:
+		return nil, uerr("NOT_FOUND", "no run %q", id)
+	case 1:
+		return found[0], nil
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].Updated.After(found[j].Updated) })
+	var ids []string
+	for _, r := range found {
+		ids = append(ids, fmt.Sprintf("%s (%s %s in %s)", r.ID, r.Workflow, r.Status, r.State))
+	}
+	return nil, uerr("AMBIGUOUS", "%d runs carry ticket %s; use a run id: %s", len(found), id, strings.Join(ids, ", "))
 }
 
 func (e *Engine) findContract(id string) (*Contract, error) {

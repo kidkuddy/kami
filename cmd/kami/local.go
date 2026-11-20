@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -91,16 +92,18 @@ func serve() error {
 	defer os.Remove(sock)
 
 	eng := engine.New(h, mem, bus, bin, sock)
+	var ready atomic.Bool
+	srv := &http.Server{Handler: engine.Booting(&ready, eng.Handler()), ReadHeaderTimeout: 10 * time.Second}
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(ln) }() // serving first: clients see "booting", not a dead socket
 	if err := eng.Boot(); err != nil {
-		ln.Close()
+		srv.Close()
 		return fail("INTERNAL", "boot: %v", err)
 	}
+	ready.Store(true)
 	eng.WatchNetwork()
-	srv := &http.Server{Handler: eng.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGTERM, syscall.SIGINT)
-	errc := make(chan error, 1)
-	go func() { errc <- srv.Serve(ln) }()
 	fmt.Fprintf(os.Stderr, "kami daemon %s: pid %d, socket %s, memento ns %s\n", engine.Version, os.Getpid(), sock, ns)
 	select {
 	case <-stop:

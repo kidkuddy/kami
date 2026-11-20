@@ -114,6 +114,14 @@ func (e *Engine) runProbe(r *Run) {
 	}
 }
 
+// probeErrorWindow: probe errors open a blocker only once they have lasted this long (tests set it to 0)
+var probeErrorWindow = func() time.Duration {
+	if d, err := time.ParseDuration(os.Getenv("KAMI_PROBE_ERROR_WINDOW")); err == nil {
+		return d
+	}
+	return time.Hour
+}()
+
 func (e *Engine) probeExited(id, tok string, res procResult) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -153,13 +161,17 @@ func (e *Engine) probeExited(id, tok string, res procResult) {
 			limit = 3
 		}
 		if out == "error" { // likely transient (a 5xx, a DNS blip): back off, and block only when it keeps failing
+			if r.Step.errors == 0 {
+				r.Step.errSince = now()
+			}
 			r.Step.errors++
 			every <<= min(r.Step.errors-1, 3)
 		}
 		e.event(r, "probe.unmapped", map[string]any{"state": r.State, "outcome": out, "errors": r.Step.errors})
 		t := now().Add(every)
 		r.Step.probeAt = &t
-		if out == "error" && r.Step.errors >= limit {
+		// and for an hour: an outage of Multica or GitLab is not a question for the owner
+		if out == "error" && r.Step.errors >= limit && now().Sub(r.Step.errSince) >= probeErrorWindow {
 			e.block(r, "stuck", fmt.Sprintf("%s: the probe failed (exit %d)", r.State, res.Exit),
 				failureBody(res, filepath.Join(e.runDir(r), r.State+".probe")), []string{"retry", "stop"})
 			return
