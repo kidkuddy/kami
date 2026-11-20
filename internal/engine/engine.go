@@ -773,30 +773,29 @@ func (e *Engine) findRun(id string) (*Run, error) {
 	return match, nil
 }
 
-// runByTicket: a ticket id (CAL-1587, any case) names the ticket run that carries it in vars.ticket_id:
-// the live one, else the one that ended last. Operators type ticket ids, and a mistyped run id
-// once closed the wrong ticket.
+// runByTicket: a ticket id (CAL-1587, any case) names the one run whose vars.ticket_id carries it.
+// Operators type ticket ids, and a mistyped run id once closed the wrong ticket. vars are written by
+// scripts and workers, so a ticket id that more than one run carries (a rerun, or a worker that set
+// it) is refused with every candidate listed: the operator picks the run id.
 func (e *Engine) runByTicket(id string) (*Run, error) {
-	var live, ended []*Run
+	var found []*Run
 	for _, r := range e.runs {
 		if t, _ := r.Vars["ticket_id"].(string); t != "" && strings.EqualFold(t, id) {
-			if Terminal(r.Status) {
-				ended = append(ended, r)
-			} else {
-				live = append(live, r)
-			}
+			found = append(found, r)
 		}
 	}
-	switch {
-	case len(live) == 1:
-		return live[0], nil
-	case len(live) > 1:
-		return nil, uerr("AMBIGUOUS", "%d live runs carry ticket %s; use a run id", len(live), id)
-	case len(ended) > 0:
-		sort.Slice(ended, func(i, j int) bool { return ended[i].Updated.After(ended[j].Updated) })
-		return ended[0], nil
+	switch len(found) {
+	case 0:
+		return nil, uerr("NOT_FOUND", "no run %q", id)
+	case 1:
+		return found[0], nil
 	}
-	return nil, uerr("NOT_FOUND", "no run %q", id)
+	sort.Slice(found, func(i, j int) bool { return found[i].Updated.After(found[j].Updated) })
+	var ids []string
+	for _, r := range found {
+		ids = append(ids, fmt.Sprintf("%s (%s %s in %s)", r.ID, r.Workflow, r.Status, r.State))
+	}
+	return nil, uerr("AMBIGUOUS", "%d runs carry ticket %s; use a run id: %s", len(found), id, strings.Join(ids, ", "))
 }
 
 func (e *Engine) findContract(id string) (*Contract, error) {
