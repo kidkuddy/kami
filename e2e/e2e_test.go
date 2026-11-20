@@ -100,7 +100,8 @@ func newEnv(t *testing.T, kekkais ...string) *env {
 		}
 		e.vars = append(e.vars, kv)
 	}
-	e.vars = append(e.vars, "KAMI_HOME="+e.home, "DAEMON_SECRET=d1", "KAMI_NET_PROBE=off") // TestOffline turns it on
+	e.vars = append(e.vars, "KAMI_HOME="+e.home, "DAEMON_SECRET=d1", "KAMI_NET_PROBE=off", // TestOffline turns it on
+		"KAMI_SCRIPT_RETRY_BASE=50ms", "KAMI_PROBE_ERROR_WINDOW=0s")
 	e.log, _ = os.OpenFile(filepath.Join(root, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	e.start()
 	return e
@@ -574,6 +575,21 @@ func TestProbeErrors(t *testing.T) {
 	}
 	e.must("contract", "resolve", c.ID, "retry")
 	expect(t, "report after retry", e.waitStatus(id, "done", short).Report, "ready")
+}
+
+// A script that errors is retried with backoff instead of opening a blocker; a ticket id finds
+// its run, and a finished run reopens into a state.
+func TestScriptRetryReopen(t *testing.T) {
+	e := newEnv(t)
+	id := e.start_("script-flaky", "--input", "errors=3")
+	v := e.waitStatus(id, "done", short)
+	if len(v.Contracts) != 0 || !hasEvent(v, "script.retry") {
+		t.Fatalf("three errors: contracts %d; events: %s", len(v.Contracts), eventTypes(v))
+	}
+	e.refused(5, "already", "run", "upgrade", "cal-77", "--state", "later")
+	e.refused(4, "needs --state", "run", "reopen", "CAL-77")
+	e.must("run", "reopen", "CAL-77", "--state", "later")
+	expect(t, "report after reopen", e.waitStatus(id, "done", short).Report, "reopened")
 }
 
 // --- 13. inputs allowlist ---------------------------------------------------------------

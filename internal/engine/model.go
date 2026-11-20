@@ -77,12 +77,13 @@ type StepState struct {
 	Children []string   `json:"children,omitempty"`
 	Silent   int        `json:"silent_exits,omitempty"` // attempts that exited without an outcome
 
-	Pending *pending   `json:"pending,omitempty"` // outcome reported by `kami step done`, applied when the process exits (or on recovery)
-	probeAt *time.Time // next probe; in memory only, a restart probes at once
-	probing bool
-	errors  int    // probe errors in a row; in memory only
-	lastSay string // the probe's last say; in memory only, so a restart may repeat it once
-	beating bool   // a heartbeat script is running
+	Pending  *pending   `json:"pending,omitempty"` // outcome reported by `kami step done`, applied when the process exits (or on recovery)
+	probeAt  *time.Time // next probe; in memory only, a restart probes at once
+	probing  bool
+	errors   int       // probe or script errors in a row; in memory only
+	errSince time.Time // the first of those errors
+	lastSay  string    // the probe's last say; in memory only, so a restart may repeat it once
+	beating  bool      // a heartbeat script is running
 }
 
 type pending struct {

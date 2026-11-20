@@ -927,6 +927,30 @@ func (e *Engine) scriptSpec(r *Run, s *kamui.Step, cmd string, k *kekkai.Kekkai,
 	return procSpec{Args: args, Dir: cwd, Env: env, Stdin: stdin, Timeout: timeout, LogDir: dir}, nil
 }
 
+// A script that exits with an error and no "error" outcome runs again after 1, 2, 4, 8, 16, 16, 16 min
+// (~1h in all) before it opens a blocker: outages of Multica, GitLab or the network clear by themselves.
+var scriptRetries, scriptRetryBase = 7, retryBase()
+
+func retryBase() time.Duration {
+	if d, err := time.ParseDuration(os.Getenv("KAMI_SCRIPT_RETRY_BASE")); err == nil { // tests
+		return d
+	}
+	return time.Minute
+}
+
+// retryScript reruns a script step that errored, unless the run moved on meanwhile.
+func (e *Engine) retryScript(id, state string, visit int) {
+	r := e.runs[id]
+	if r == nil || Terminal(r.Status) || r.State != state || r.Visits[state] != visit || r.Step == nil || r.Step.Phase != "retrying" {
+		return
+	}
+	if e.held(r) {
+		e.park(r, state)
+		return
+	}
+	e.startScript(r)
+}
+
 // scriptOutcome reads {"outcome","vars"} from stdout, else ok/error by exit code.
 func scriptOutcome(res procResult) (string, map[string]any) {
 	if res.TimedOut {
@@ -958,6 +982,15 @@ func (e *Engine) scriptExited(runID, tok string, res procResult) {
 	r.Step.Token, r.Step.Phase = "", "done"
 	e.event(r, "script.exited", map[string]any{"state": r.State, "exit": res.Exit, "outcome": out, "stderr": tail(res.Stderr, 400)})
 	if _, ok := e.def(r).States[r.State].Outcomes[out]; !ok {
+		if out == "error" && r.Step.errors < scriptRetries { // likely transient (a 5xx, a flapping API): retry with backoff before anyone is asked
+			r.Step.errors++
+			d := scriptRetryBase << min(r.Step.errors-1, 4)
+			r.Step.Phase = "retrying"
+			e.event(r, "script.retry", map[string]any{"state": r.State, "exit": res.Exit, "errors": r.Step.errors, "in": d.String(), "stderr": tail(res.Stderr, 400)})
+			id, state, visit := r.ID, r.State, r.Visits[r.State]
+			e.setTimer("run:"+id, now().Add(d), func() { e.retryScript(id, state, visit) })
+			return
+		}
 		e.block(r, "stuck", fmt.Sprintf("%s: the script ended with %q (exit %d), which has no next step", r.State, out, res.Exit),
 			failureBody(res, r.Step.Dir), []string{"retry", "stop"})
 		return

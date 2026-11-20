@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"kami/internal/eventbus"
@@ -98,6 +99,23 @@ func workerOnly(r *http.Request) error {
 	return nil
 }
 
+// Booting answers while Boot runs (it can take minutes on a large store): /status says so, and
+// every other call is refused with UNAVAILABLE instead of the socket refusing connections, which
+// clients cannot tell from a crash.
+func Booting(ready *atomic.Bool, h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ready.Load() {
+			h.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/status" {
+			reply(w, map[string]any{"booting": true, "version": Version}, nil)
+			return
+		}
+		reply(w, nil, uerr("UNAVAILABLE", "kami is booting (loading runs); try again in a minute"))
+	})
+}
+
 // Handler is the daemon's HTTP API.
 func (e *Engine) Handler() http.Handler {
 	m := http.NewServeMux()
@@ -151,14 +169,15 @@ func (e *Engine) Handler() http.Handler {
 			return
 		}
 		var req struct {
-			State string
-			Vars  map[string]any
+			State  string
+			Vars   map[string]any
+			Reopen bool
 		}
 		if err := decode(r, &req); err != nil {
 			reply(w, nil, err)
 			return
 		}
-		run, err := e.Upgrade(r.PathValue("id"), req.State, normMap(req.Vars))
+		run, err := e.Upgrade(r.PathValue("id"), req.State, normMap(req.Vars), req.Reopen)
 		reply(w, e.view(run), err)
 	})
 

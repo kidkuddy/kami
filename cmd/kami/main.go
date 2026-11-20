@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -105,7 +106,7 @@ const usage = `kami — the Kami agent OS
 
   kami run start <workflow>[:<entry>] [--kekkai K] [--input k=v]... [--inputs JSON] [--afk MODE]
   kami run list [--status S|active] [--kekkai K] [--var k=v]...
-  kami run show <id> | cancel <id> | upgrade <id> [--state S] [--vars JSON]
+  kami run show <id> | cancel <id> | upgrade <id> [--state S] [--vars JSON] | reopen <id> --state S [--vars JSON]
 
   kami system <run> <text> [--state S] [--vars JSON] [--answer A]
   kami signal pub <type> [--key K] [--data JSON] [--kekkai K]
@@ -247,8 +248,19 @@ func client() *http.Client {
 	}}}
 }
 
-// call sends a request to the daemon and decodes the envelope's data into out.
+// call sends a request to the daemon and decodes the envelope's data into out. While the
+// daemon boots it waits (up to 15 min) instead of failing.
 func call(method, path string, body any, out any) (json.RawMessage, error) {
+	for deadline := time.Now().Add(15 * time.Minute); ; time.Sleep(time.Second) {
+		data, err := call1(method, path, body, out)
+		var ce *cliError
+		if err == nil || !errors.As(err, &ce) || ce.Code != "UNAVAILABLE" || !strings.Contains(ce.Msg, "booting") || time.Now().After(deadline) {
+			return data, err
+		}
+	}
+}
+
+func call1(method, path string, body any, out any) (json.RawMessage, error) {
 	var rd io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -383,6 +395,10 @@ func cmdStatus() error {
 		return err
 	}
 	return emit(data, func() {
+		if st["booting"] == true {
+			fmt.Printf("%v  booting: loading runs, not serving yet\n", st["version"])
+			return
+		}
 		fmt.Printf("%v  pid %v  home %v  memento ns %v\n", st["version"], st["pid"], st["home"], st["memento_namespace"])
 		runs, _ := st["runs"].(map[string]any)
 		keys := make([]string, 0, len(runs))
@@ -505,8 +521,8 @@ func cmdRun(sub string, args []string) error {
 			return err
 		}
 		return emit(data, func() { fmt.Printf("cancelled %s\n", r.ID) })
-	case "upgrade":
-		usage := fail("USAGE", "usage: kami run upgrade <id> [--state S] [--vars JSON]")
+	case "upgrade", "reopen":
+		usage := fail("USAGE", "usage: kami run upgrade <id> [--state S] [--vars JSON] | kami run reopen <id> --state S [--vars JSON]")
 		if len(args) < 1 || len(args)%2 == 0 {
 			return usage
 		}
@@ -525,14 +541,15 @@ func cmdRun(sub string, args []string) error {
 				return usage
 			}
 		}
+		body["reopen"] = sub == "reopen"
 		var r engine.Run
 		data, err := call("POST", "/runs/"+url.PathEscape(args[0])+"/upgrade", body, &r)
 		if err != nil {
 			return err
 		}
-		return emit(data, func() { fmt.Printf("upgraded %s → %s\n", r.ID, r.State) })
+		return emit(data, func() { fmt.Printf("%sd %s → %s\n", sub, r.ID, r.State) })
 	}
-	return fail("USAGE", "usage: kami run start|list|show|cancel|upgrade")
+	return fail("USAGE", "usage: kami run start|list|show|cancel|upgrade|reopen")
 }
 
 func showRun(r *engine.Run, cs []engine.ContractView, auras []engine.Aura, kids []engine.RunBrief, events []map[string]any) {
