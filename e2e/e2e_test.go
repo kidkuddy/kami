@@ -592,6 +592,18 @@ func TestScriptRetryReopen(t *testing.T) {
 	expect(t, "report after reopen", e.waitStatus(id, "done", short).Report, "reopened")
 }
 
+// A keyed wait whose key var is missing catches nothing; with the var set it catches its key only.
+func TestKeyedWaitMissingKey(t *testing.T) {
+	e := newEnv(t)
+	unset := e.start_("keyed-wait")
+	set := e.start_("keyed-wait", "--input", `k="a"`)
+	e.waitStatus(set, "waiting", short)
+	e.waitStatus(unset, "waiting", short)
+	e.must("signal", "pub", "ping", "--key", "a")
+	expect(t, "keyed run", e.waitStatus(set, "done", short).Report, "got")
+	expect(t, "unset key run", e.waitStatus(unset, "done", short).Report, "none")
+}
+
 // --- 13. inputs allowlist ---------------------------------------------------------------
 
 func TestInputsScope(t *testing.T) {

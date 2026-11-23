@@ -18,7 +18,14 @@ func (e *Engine) armWait(r *Run, s *kamui.Step) {
 	r.Step.Phase, r.Status = "waiting", StWaiting
 	if s.Signal != "" {
 		r.Step.Signal = s.Signal
-		r.Step.Key, _ = kamui.Render(s.Key, r.Vars)
+		key, missing := kamui.Render(s.Key, r.Vars)
+		if s.Key != "" && (key == "" || len(missing) > 0) {
+			// a keyed wait whose key var is missing must not become a wildcard: it caught every
+			// owner message in Slack (23 Nov, chats started without kami_thread). It matches nothing.
+			e.event(r, "wait.key_missing", map[string]any{"state": r.State, "key": s.Key, "vars": missing})
+			key = "\x00unset:" + s.Key
+		}
+		r.Step.Key = key
 	}
 	if s.Timer > 0 {
 		w := t.Add(s.Timer)
